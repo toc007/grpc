@@ -15,6 +15,7 @@
 require_relative '../grpc'
 require_relative 'active_call'
 require_relative 'service'
+require_relative 'server_reflection'
 require 'thread'
 
 # GRPC contains the General RPC module.
@@ -342,12 +343,20 @@ module GRPC
     # - #running? returns true after this is called, until #stop cause the
     #   the server to stop.
     def run
+      self.handle(ReflectionServer)
       @run_mutex.synchronize do
         fail 'cannot run without registering services' if rpc_descs.size.zero?
+
+        ReflectionServer.set_descs(@rpc_descs)
+        ReflectionServer.set_descs(@rpc_handlers)
+
+        p "in run"
+
         @pool.start
         @server.start
         transition_running_state(:running)
         @run_cond.broadcast
+        p "in run"
       end
       loop_handle_server_calls
     end
