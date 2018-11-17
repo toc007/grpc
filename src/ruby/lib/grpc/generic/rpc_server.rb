@@ -347,16 +347,12 @@ module GRPC
       @run_mutex.synchronize do
         fail 'cannot run without registering services' if rpc_descs.size.zero?
 
-        ReflectionServer.set_descs(@rpc_descs)
-        ReflectionServer.set_descs(@rpc_handlers)
-
-        p "in run"
+        ReflectionServer._init(@rpc_descs, @rpc_handlers)
 
         @pool.start
         @server.start
         transition_running_state(:running)
         @run_cond.broadcast
-        p "in run"
       end
       loop_handle_server_calls
     end
