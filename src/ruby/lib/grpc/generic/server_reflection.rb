@@ -10,27 +10,38 @@ require_relative './reflection/reflection_pb.rb'
 require_relative './reflection/reflection_services_pb.rb'
 require 'google/protobuf'
 
-$services = []
+include Grpc::Reflection::V1alpha
+
+$services = {}
 $rpc_descs
 $rpc_handlers
 $pool
 
 # ReflectionServer implements the ServerReflection template
-class ReflectionServer < Grpc::Reflection::V1alpha::ServerReflection::Service
+class ReflectionServer < ServerReflection::Service
 
   def self._init(rpc_descs, rpc_handlers)
     $rpc_descs = rpc_descs.dup
     $rpc_descs.freeze
 
+    $rpc_descs.each_pair do |route, desc|
+      p route
+      p desc
+    end
+
     $rpc_handlers = rpc_handlers.dup
     $rpc_handlers.freeze
 
-    $rpc_descs.each_key do |service|
-      service = service.to_s
+    $rpc_descs.each_key do |package|
+      package = package.to_s
       # strip out the first /
-      service[0] = ""
-      service.sub!("/", ".")
-      $services << service
+      package[0] = ""
+      package, service = package.split("/")
+      if $services.has_key? package
+        $services[package] << service
+      else
+        $services[package] = [service]
+      end
     end
     $services.sort
     $services.freeze
@@ -57,37 +68,20 @@ class ReflectionEnumerator
     begin
       # send back the earlier messages at this point
       @requests.each do |r|
-        if r.instance_of? Grpc::Reflection::V1alpha::ServerReflectionRequest
+        if r.instance_of? ServerReflectionRequest
           yield handle_request(r)
         else
           p "\tHey!! This isn't a ServerReflectionRequest (╯°□°）╯︵ ┻━┻"
-          err = Grpc::Reflection::V1alpha::ErrorResponse.new(
-            :error_code => 1,
-            :error_message => "Expected a ServerReflectionRequest"
+          invalid_arg = GRPC::InvalidArgument.new(
+            details = "Expected a ServerReflectionRequest"
           )
-          yield Grpc::Reflection::V1alpha::ServerReflectionResponse.new(
-            :original_request => r,
-            :message_response => err
+          err = ErrorResponse.new(
+            :error_code => invalid_arg.code,
+            :error_message => invalid_arg.details
           )
+          resp["error_response"] = err
+          yield resp
         end
-
-        # # Create a ServiceResponse
-        # #   User specified or auto generated?
-        # service_names = ["hello", "world"]
-        # services = service_names.map do |s|
-        #   Grpc::Reflection::V1alpha::ServiceResponse.new(:name => s)
-        # end
-
-        # serviceResponse = Grpc::Reflection::V1alpha::ListServiceResponse.new(
-        #   :service => services
-        # )
-
-        # response = Grpc::Reflection::V1alpha::ServerReflectionResponse.new(
-        #   :valid_host => "ruby_reflection_server",
-        #   :original_request => r,
-        #   :list_services_response => serviceResponse
-        # )
-        # yield response
       end
     rescue StandardError => e
       fail e # signal completion via an error
@@ -95,17 +89,33 @@ class ReflectionEnumerator
   end
 
   def handle_request(request)
-    resp = Grpc::Reflection::V1alpha::ServerReflectionResponse.new()
+    resp = ServerReflectionResponse.new()
     resp["original_request"] = request
     case request.message_request
     when :file_by_filename
       p "file_by_filename: #{request.file_by_filename}"
-      $pool.lookup(request.file_by_filename)
       # respond with a file_descriptro_response
-      
+
     when :file_containing_symbol
       p "file_containing_symbol: #{request.file_containing_symbol}"
-
+      req_package = request.file_containing_symbol
+      if $services.has_key? req_package
+        methods = $services[req_package]
+        methods.each do |method|
+          p "looking up #{req_package}.#{method}"
+          route = "/"+req_package+"/"+method
+          route = route.to_sym
+          p $rpc_descs[route]
+          p req_descriptor
+          p req_descriptor.name
+          p req_descriptor.file_descriptor
+          req_descriptor.each do |x|
+            p x
+          end
+        end
+      else
+        p "#{req_package} not a registered service"
+      end
     when :file_containing_extension
       p "file_containing_extension: #{request.file_containing_extension}"
 
@@ -113,30 +123,28 @@ class ReflectionEnumerator
       p "all_extension_numbers_of_type: #{request.all_extension_numbers_of_type}"
 
     when :list_services
-      p "inside list_services"
       p "list_services: #{request.list_services}"
-      p "Registered services: #{$services}"
 
-      service_response = $services.map do |service|
-        Grpc::Reflection::V1alpha::ServiceResponse.new(:name => service)
+      service_response = $services.keys.map do |package|
+        ServiceResponse.new(:name => package)
       end
-      p "service_response: #{service_response}"
-      
+
       list_services_response = 
-        Grpc::Reflection::V1alpha::ListServiceResponse.new(
-          :service => service_response)
-      p "list_services_response: #{list_services_response}"
+        ListServiceResponse.new(:service => service_response)
 
       resp["list_services_response"] = list_services_response
+
     else
       p "malformed request, does not have message_request set"
-      err = Grpc::Reflection::V1alpha::ErrorResponse.new(
-        :error_code => 1,
-        :error_message => "Expected a ServerReflectionRequest"
+      invalid_arg = GRPC::InvalidArgument.new(
+        details = "Expected a ServerReflectionRequest"
+      )
+      err = ErrorResponse.new(
+        :error_code => invalid_arg.code,
+        :error_message => invalid_arg.details
       )
       resp["error_response"] = err
     end
     return resp
-    puts "\n"
   end
 end
